@@ -36,4 +36,17 @@ The first session still must initialize. Reloading the page, cancellation, worke
 
 Peak memory, physical low-memory devices, CPU-only throughput, full-song throughput and perceptual quality were not benchmarked. No paid API, remote inference service or local service exposure was introduced. Retained model memory is bounded but remains allocated while the worker is alive; cancel an active job or reload to explicitly reclaim it.
 
-Publication target: `https://kea1e.github.io/steminize/` through the existing main-branch GitHub Pages workflow. Final deployment verification must independently match the pushed commit to a successful Actions run, compare anonymous HTTP HTML and worker bytes with this build, and exercise the production browser. Do not interpret this pre-publication note as a deployment-success receipt by itself.
+## Production verification
+
+Implementation commit: `b6dee1599bb5a14faeff6d4876943f221fd18330`.
+
+Published at `https://kea1e.github.io/steminize/` by successful Pages run `38810214978` (2026-10-15). The final receipt-only commit does not change built application bytes.
+
+- Local full suite: 414 PASS lines (410 existing assertions plus four worker/client integration groups). TypeScript/Vite build and diff checks pass; npm audit reports zero vulnerabilities.
+- Pages CI: successful test, build and deploy. CI logged 410 PASS lines and skipped four pre-existing ffmpeg encoder checks because its runner lacks ffmpeg. All four encoder checks passed locally with real ffmpeg.
+- Anonymous HTTPS HTML, main JavaScript, GPU worker, CPU worker and Basic Pitch licence matched the local build byte for byte.
+- Production GPU worker: `assets/workerGpu-BTAOmQye.js`, SHA-256 `fbceb93aa7c4f2ad62950ad69ceccd0beb995937aee9bdbeaec90312970e3d52`.
+- Actual production file selection, separation, Re-run and WAV export completed in the named release browser. Unmodified production worker, browser deviceMemory=8, WebGPU, same 2-second synthetic stereo fixture, 6-stem Compact, shifts=1, overlap=.25: first job 134.938 seconds, repeat 1.943 seconds. These worker dispatch-to-result timings exclude model download and decode. UI displayed `Done in 2m 15s` then `Done in 2s`.
+- Both production jobs returned all six stereo stems, 88,200 samples per channel, every sample finite. Only one model-byte request and one initialization stage occurred across both jobs. The built-worker low-memory-policy probe above independently counted one actual ORT session creation across three jobs.
+- Export mix produced a real downloaded WAV verified by ffprobe/ffmpeg: PCM signed 16-bit little-endian, stereo, 44,100 Hz, exactly 2 seconds, decoded successfully. This is a technical smoke test, not a musical-quality assessment.
+- Visually inspected production initialization feedback and completed six-track player/queue screenshots. Temporary local preview servers were stopped; no local service was exposed.
