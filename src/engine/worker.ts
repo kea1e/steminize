@@ -88,7 +88,7 @@ const sessions = new Map<string, OrtT.InferenceSession>();
 const maxSessions = ((navigator as any).deviceMemory ?? 4) >= 8 ? 4 : 1;
 let lastBackend = '';
 
-async function getSession(f: ModelFile, backend: 'webgpu' | 'wasm'): Promise<{ s: OrtT.InferenceSession; backend: 'webgpu' | 'wasm' }> {
+async function getSession(f: ModelFile, backend: 'webgpu' | 'wasm', onStage: (stage: string) => void): Promise<{ s: OrtT.InferenceSession; backend: 'webgpu' | 'wasm' }> {
   const id = `${f.key}|${backend}`;
   const hit = sessions.get(id);
   if (hit) {
@@ -101,6 +101,7 @@ async function getSession(f: ModelFile, backend: 'webgpu' | 'wasm'): Promise<{ s
     sessions.delete(k);
     await old.release();
   }
+  onStage('Reading cached model');
   const raw = await requestModel(f.key);
   if (!raw) throw new Error(`Model ${f.key} is not downloaded`);
   // Some exports use float64 maths the browser engine lacks; convert to float32.
@@ -108,6 +109,7 @@ async function getSession(f: ModelFile, backend: 'webgpu' | 'wasm'): Promise<{ s
   let s: OrtT.InferenceSession;
   let used = backend;
   let note: string | undefined;
+  onStage('Initializing model · first use can take a few minutes');
   const attempt = ort.InferenceSession.create(bytes, { executionProviders: [backend], ...SESSION_OPTS });
   try {
     s = backend === 'webgpu' ? await withTimeout(attempt, GPU_SESSION_TIMEOUT_MS, 'Loading the model on the GPU') : await attempt;
@@ -162,13 +164,13 @@ async function run(job: SeparateJob) {
     rows: f.rows,
     load: async () => {
       stage = chosen.length > 1 ? `Model ${i + 1}/${chosen.length}` : 'Separating';
-      post({ type: 'progress', id: job.id, done: -1, total: 0, stage: 'Loading model' });
-      const { s } = await getSession(f, backend);
+      const { s } = await getSession(f, backend, (stage) => post({ type: 'progress', id: job.id, done: -1, total: 0, stage }));
       return {
         run: runner(s),
         release: async () => {
-          // Specialists are big: drop them straight away on small machines.
-          if (maxSessions === 1) {
+          // Keep ordinary models warm between songs, even when deviceMemory is absent.
+          // Specialist bags still release immediately on small machines (including a selected single member).
+          if (maxSessions === 1 && info.files[job.precision].length > 1) {
             for (const [k, v] of sessions) if (v === s) sessions.delete(k);
             await s.release();
           }
@@ -212,6 +214,10 @@ if (!isThreadHelper) self.onmessage = async (e: MessageEvent<WorkerIn>) => {
     try {
       await run(m);
     } catch (err) {
+      // Failed inference can leave large allocations behind. Drop cached sessions before retrying.
+      const stale = [...sessions.values()];
+      sessions.clear();
+      await Promise.all(stale.map((s) => s.release().catch(() => {})));
       const c = err instanceof CancelledError;
       post({ type: 'error', id: m.id, message: c ? 'Cancelled' : String((err as Error)?.message ?? err), cancelled: c });
     } finally {

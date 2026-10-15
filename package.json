@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-transform-types --no-warnings tests/run.ts",
+    "test": "node --experimental-transform-types --no-warnings tests/run.ts && node --experimental-transform-types --no-warnings tests/workerSessions.ts",
     "tauri": "tauri"
   },
   "author": "Neil",
