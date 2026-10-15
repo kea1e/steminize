@@ -30,7 +30,11 @@ export interface EqPanel {
 export function eqPanel(colour: string, onChange: (e: EqParams) => void, onCommit?: (before: EqParams, after: EqParams) => void): EqPanel {
   let eq: EqParams = { ...FLAT };
   let commitBase: EqParams = { ...eq };
-  const curve = h('canvas', { class: 'eq-curve' });
+  const hint = 'Drag focus left/right for frequency, up/down for boost or cut. Drag active cuts left/right. Sliders support keyboard control.';
+  const curve = h('canvas', { class: 'eq-curve', title: hint, 'aria-label': hint });
+  const readout = h('output', { class: 'eq-readout' });
+  type Band = 'freq' | 'lowCut' | 'highCut';
+  let drag: { id: number; band: Band; x: number; y: number; freq: number; gain: number } | undefined;
 
   const chip = (name: string, hint: string, value: EqParams) => {
     const b = h('button', { class: 'eq-chip', type: 'button', title: hint }, name);
@@ -55,7 +59,7 @@ export function eqPanel(colour: string, onChange: (e: EqParams) => void, onCommi
     'div',
     { class: 'eq-panel', style: `--c:${colour}` },
     h('div', { class: 'eq-presets' }, ...chips.map((c) => c.b)),
-    h('div', { class: 'eq-body' }, h('div', { class: 'eq-graph' }, curve), h('div', { class: 'eq-sliders' }, lc.row, hc.row, ff.row, fg.row, fq.row)),
+    h('div', { class: 'eq-body' }, h('div', { class: 'eq-graph' }, curve, readout), h('div', { class: 'eq-sliders' }, lc.row, hc.row, ff.row, fg.row, fq.row)),
   );
 
   function sync() {
@@ -69,6 +73,9 @@ export function eqPanel(colour: string, onChange: (e: EqParams) => void, onCommi
     ff.out.textContent = fmtHz(eq.freq);
     fg.out.textContent = eq.gain ? `${eq.gain > 0 ? '+' : ''}${eq.gain} dB` : 'Off';
     fq.out.textContent = eq.q >= 2.5 ? 'Narrow' : eq.q <= 0.8 ? 'Wide' : 'Medium';
+    readout.textContent = drag
+      ? drag.band === 'freq' ? `Focus ${fmtHz(eq.freq)} · ${eq.gain > 0 ? '+' : ''}${eq.gain} dB` : `${drag.band === 'lowCut' ? 'Low cut' : 'High cut'} ${fmtHz(eq[drag.band])}`
+      : 'Drag line to tune';
     for (const c of chips) pressed(c.b, sameEq(c.value, eq) || (c.value === FLAT && isFlat(eq)));
     draw();
   }
@@ -111,6 +118,54 @@ export function eqPanel(colour: string, onChange: (e: EqParams) => void, onCommi
     return { freq: 1000 };
   }
 
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  curve.onpointerdown = (e) => {
+    if (drag || !e.isPrimary || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const r = curve.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    markGestureStart();
+    const at = logMap(clamp((e.clientX - r.left) / r.width, 0, 1), 20, 20000);
+    const bands: Band[] = ['freq', ...(eq.lowCut ? ['lowCut' as const] : []), ...(eq.highCut ? ['highCut' as const] : [])];
+    const band = bands.reduce((a, b) => Math.abs(Math.log(eq[b] / at)) < Math.abs(Math.log(eq[a] / at)) ? b : a);
+    // Start at the grabbed location without a gain jump on the combined filter response.
+    const limits = band === 'freq' ? FF : band === 'lowCut' ? LC : HC;
+    const freq = clamp(Math.round(at), limits[0], limits[1]);
+    drag = { id: e.pointerId, band, x: e.clientX, y: e.clientY, freq, gain: eq.gain };
+    curve.setPointerCapture(e.pointerId);
+    // Also cover browsers that silently lose capture before crossing the canvas edge.
+    window.addEventListener('pointermove', moveCurve);
+    window.addEventListener('pointerup', finishCurve);
+    window.addEventListener('pointercancel', finishCurve);
+    apply({ ...eq, [band]: freq });
+  };
+  const moveCurve = (e: PointerEvent) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const r = curve.getBoundingClientRect();
+    const limits = drag.band === 'freq' ? FF : drag.band === 'lowCut' ? LC : HC;
+    const freq = clamp(Math.round(drag.freq * 1000 ** ((e.clientX - drag.x) / r.width)), limits[0], limits[1]);
+    const gain = clamp(Math.round(drag.gain + (drag.y - e.clientY) * 45 / r.height), -24, 12);
+    apply({ ...eq, [drag.band]: freq, ...(drag.band === 'freq' ? { gain } : {}) });
+  };
+  const finishCurve = (e: PointerEvent) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    e.stopPropagation();
+    drag = undefined;
+    window.removeEventListener('pointermove', moveCurve);
+    window.removeEventListener('pointerup', finishCurve);
+    window.removeEventListener('pointercancel', finishCurve);
+    if (curve.hasPointerCapture(e.pointerId)) curve.releasePointerCapture(e.pointerId);
+    commitGesture();
+    sync();
+  };
+  curve.onpointermove = moveCurve;
+  curve.onpointerup = finishCurve;
+  curve.onpointercancel = finishCurve;
+  curve.onlostpointercapture = finishCurve;
+
   function draw() {
     if (!curve.isConnected || !curve.clientWidth) return;
     const g = fitCanvas(curve);
@@ -147,6 +202,17 @@ export function eqPanel(colour: string, onChange: (e: EqParams) => void, onCommi
     g.beginPath();
     freqs.forEach((f, i) => (i ? g.lineTo(x(f), y(db[i])) : g.moveTo(x(f), y(db[i]))));
     g.stroke();
+    const bands: Band[] = ['freq', ...(eq.lowCut ? ['lowCut' as const] : []), ...(eq.highCut ? ['highCut' as const] : [])];
+    for (const band of bands) {
+      const active = drag?.band === band;
+      const cy = y(responseDb(eq, [eq[band]])[0]);
+      g.beginPath();
+      g.arc(clamp(x(eq[band]), 7 * dpr, w - 7 * dpr), clamp(cy, 7 * dpr, hh - 7 * dpr), (active ? 6 : 4) * dpr, 0, Math.PI * 2);
+      g.fillStyle = active ? colour : getComputedStyle(curve.parentElement!).backgroundColor;
+      g.fill();
+      g.lineWidth = 2 * dpr;
+      g.stroke();
+    }
   }
 
   sync();
